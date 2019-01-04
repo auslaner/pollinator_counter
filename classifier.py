@@ -13,7 +13,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from prompt_toolkit.validation import Validator, ValidationError
 
-from rana_logger import add_log_entry, get_last_entry, setup, add_or_update_discrete_visitor
+from rana_logger import add_log_entry, get_last_entry, setup, add_or_update_discrete_visitor, populate_video_table
 from class_handler import CLASSES, create_classification_folders
 from utils import system_paths, get_video_list, manual_selection, get_filename, get_sites
 
@@ -63,6 +63,7 @@ PROMPT_STYLE = Style.from_dict({
 
 bindings = KeyBindings()
 visitor = False
+#logging.basicConfig(level=logging.DEBUG)
 
 
 class NumberValidator(Validator):
@@ -162,6 +163,7 @@ def main(arguments):
         print("[!] No videos found in path: {}".format(arguments["video_path"]))
 
     site_pref = determine_site_preference(video_list)
+    populate_video_table(video_list)
     for vdir in video_list:
         split = vdir.directory.split(os.path.sep)[-2:]  # Extract site and plant info from directory path
         site = split[0]
@@ -198,6 +200,10 @@ def main(arguments):
                     if last_log is not None and f_num <= last_log.frame:
                         print("[*] Frame number {} has already been analyzed. Waiting for frame number {}..."
                               .format(f_num, last_log.frame + 1))
+                        # Continue to the next frame if the logs indicate we have analyzed frames later than this
+                        # one
+                        time.sleep(0.01)  # Sleep here so we don't overtake the buffer
+                        continue
 
                 """
                 Because previous frames are passed to manual selection,

@@ -12,7 +12,6 @@ from peewee import SqliteDatabase
 system_paths = {}
 
 Video = namedtuple('Video', ['directory', 'files'])
-logging.basicConfig(level=logging.DEBUG)
 
 
 def get_db_connection():

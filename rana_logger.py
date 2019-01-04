@@ -1,6 +1,7 @@
+import os
 from peewee import *
 
-from utils import get_video_list, get_db_connection
+from utils import get_db_connection
 
 db = get_db_connection()
 
@@ -152,7 +153,7 @@ def get_last_entry(manual, video):
     boolean value as the manual parameter.
     """
     try:
-        last = LogEntry.select().where(LogEntry.video == video, LogEntry.manual == manual)\
+        last = LogEntry.select().where(LogEntry.video == video, LogEntry.manual == manual) \
             .order_by(LogEntry.id.desc()).get()
 
         return last
@@ -210,21 +211,21 @@ def get_video(directory, video_fname):
 
 
 @db.connection_context()
-def populate_video_table(video_file_path):
-    count = Video.select().count()
-    if count == 0:
-        for vdir in get_video_list(video_file_path):
-            split = vdir.directory.split("/")[-2:]
-            site = split[0]
-            plant = split[1]
-            for video in vdir.files:
-                entry = Video(directory=vdir.directory,
-                              video=video,
-                              site=site,
-                              plant=plant,
-                              total_frames=0,
-                              frame_times_processed=False,
-                              pollinators_processed=False)
+def populate_video_table(video_list):
+    print("[*] Populating Video database table...")
+    for vdir in video_list:
+        split = vdir.directory.split(os.path.sep)[-2:]
+        site = split[0]
+        plant = split[1]
+        for video in vdir.files:
+            entry, created = Video.get_or_create(directory=vdir.directory,
+                                                 video=video,
+                                                 site=site,
+                                                 plant=plant,
+                                                 defaults={"total_frames": 0,
+                                                           "frame_times_processed": False,
+                                                           "pollinators_processed": False})
+            if created:
                 entry.save()
 
 
