@@ -259,12 +259,16 @@ def handle_pollinator(arguments, file_name, vdir, count, f_num, pollinator, box,
             return[("class:bottom-toolbar", "Press CTRL + d to mark pollinator as a discrete visitor.")]
         else:
             return [("class:bottom-toolbar", "Discrete visitor marked!")]
+    # Default pollinator selection is highlighted in red for previous frames
+    frame_annotation_color = (0, 0, 255)
     w, h, _ = pollinator.shape
     area = w * h
     pol_id = prompt("Visitor ID >> ", bottom_toolbar=bottom_toolbar, completer=get_completer("pollinator"),
                     key_bindings=bindings)
     if visitor:
         handle_visitor(pol_id, vdir, video)
+        # Discrete visitors are highlighted in purple
+        frame_annotation_color = (240, 32, 160)
 
     img_path = os.path.join(arguments["write_path"], "Pollinator", pol_id, file_name)
     print("[*] Saving pollinator image to", img_path)
@@ -292,7 +296,7 @@ def handle_pollinator(arguments, file_name, vdir, count, f_num, pollinator, box,
     # Annotate frame
     logging.debug("Box: {}".format(box))
     x, y, w, h = [int(num) for num in box.split(" ")]
-    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 1)
+    cv2.rectangle(frame, (x, y), (x + w, y + h), frame_annotation_color, 1)
 
     count += 1
     return count
