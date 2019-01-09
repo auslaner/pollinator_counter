@@ -13,7 +13,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from prompt_toolkit.validation import Validator, ValidationError
 
-from rana_logger import add_log_entry, get_last_entry, setup, add_or_update_discrete_visitor, populate_video_table
+from rana_logger import add_log_entry, get_last_entry, setup, add_or_update_discrete_visitor, populate_video_table, \
+    get_processed_videos, add_processed_video
 from class_handler import CLASSES, create_classification_folders
 from utils import system_paths, get_video_list, manual_selection, get_filename, get_sites
 
@@ -32,6 +33,7 @@ POLLINATOR_OPTIONS = ["Anthophora",
                       "Bee tiny",
                       "Bombylius",
                       "Butterfly",
+                      "Ceratina",
                       "Fly",
                       "Halictus",
                       "Hyles lineata",
@@ -155,6 +157,94 @@ def determine_site_preference(video_list):
     return site_pref
 
 
+def process_video(arguments, vdir, video, site, plant):
+    print("[*] Analyzing video {} from site {}, plant number {}.".format(video, site, plant))
+    last_log = get_last_entry(True, video)
+
+    vs = FileVideoStream(os.path.join(vdir.directory, video)).start()
+
+    # The current frame number and pollinator count
+    f_num = 0
+    count = 0
+
+    # Allow the buffer some time to fill
+    time.sleep(2.0)
+
+    # Keep a list of previous frames
+    previous_frames = []
+
+    while vs.more():
+        frame = vs.read()
+
+        # If the frame is None, the video is done being processed and we can move to the next one
+        if frame is None:
+            break
+        else:
+            f_num += 1
+            if last_log is not None and f_num <= last_log.frame:
+                print("[*] Frame number {} has already been analyzed. Waiting for frame number {}..."
+                      .format(f_num, last_log.frame + 1))
+                # Continue to the next frame if the logs indicate we have analyzed frames later than this
+                # one
+                time.sleep(0.01)  # Sleep here so we don't overtake the buffer
+                continue
+
+        """
+        Because previous frames are passed to manual selection,
+        the pollinator selection may not have occurred on the
+        current frame. Therefore, the frame number used for
+        file names and logging will need to be calculated.
+        """
+        previous_frames = handle_previous_frames(frame, previous_frames)
+        pollinator, box, labeled_frame = manual_selection(f_num, previous_frames, site, plant, video)
+        if pollinator is None and box is None and labeled_frame is None:
+            continue
+
+        fnum_calc = calculate_frame_number(labeled_frame, previous_frames, f_num)
+        frame_fname = get_filename(fnum_calc, count, video, frame=True)
+        if pollinator is not False and pollinator is not None:
+            # Save the whole frame as a pollinator
+            print("[*] Saving frame as an example of Pollinator.")
+            cv2.imwrite(os.path.join(arguments["write_path"], "Frames", "Pollinator", frame_fname),
+                        labeled_frame)
+
+            # And save the pollinator
+            pol_fname = get_filename(fnum_calc, count, video)
+            count = handle_pollinator(arguments, pol_fname, vdir, count, fnum_calc, pollinator, box, video,
+                                      labeled_frame)
+
+        elif pollinator is False and box is None:
+            # Save the whole frame as an example of no pollinator
+            print("[*] Saving frame as an example of Not_Pollinator.")
+            img_path = os.path.join(arguments["write_path"], "Frames", "Not_Pollinator", frame_fname)
+            cv2.imwrite(img_path, labeled_frame)
+            w, h, _ = frame.shape
+            size = w * h
+            print("[*] Logging this frame as Not_Pollinator.")
+            add_log_entry(directory=vdir.directory,
+                          video=video,
+                          time=None,
+                          classification="Not_Pollinator",
+                          pollinator_id=None,
+                          proba=None,
+                          genus=None,
+                          species=None,
+                          behavior=None,
+                          size=size,
+                          bbox="Whole",  # Entire frame
+                          size_class=None,
+                          frame_number=fnum_calc,
+                          manual=True,
+                          img_path=img_path,
+                          )
+
+    add_processed_video(video)
+    vs.stop()
+
+
+cv2.destroyAllWindows()
+
+
 def main(arguments):
     pollinator_setup(arguments)
 
@@ -164,6 +254,9 @@ def main(arguments):
 
     site_pref = determine_site_preference(video_list)
     populate_video_table(video_list)
+
+    processed_videos = get_processed_videos(pollinator=True)
+
     for vdir in video_list:
         split = vdir.directory.split(os.path.sep)[-2:]  # Extract site and plant info from directory path
         site = split[0]
@@ -174,89 +267,11 @@ def main(arguments):
             continue
         plant = split[1]
         for video in vdir.files:
-            print("[*] Analyzing video {} from site {}, plant number {}.".format(video, site, plant))
-            last_log = get_last_entry(True, video)
-
-            vs = FileVideoStream(os.path.join(vdir.directory, video)).start()
-
-            # The current frame number and pollinator count
-            f_num = 0
-            count = 0
-
-            # Allow the buffer some time to fill
-            time.sleep(2.0)
-
-            # Keep a list of previous frames
-            previous_frames = []
-
-            while vs.more():
-                frame = vs.read()
-
-                # If the frame is None, the video is done being processed and we can move to the next one
-                if frame is None:
-                    break
-                else:
-                    f_num += 1
-                    if last_log is not None and f_num <= last_log.frame:
-                        print("[*] Frame number {} has already been analyzed. Waiting for frame number {}..."
-                              .format(f_num, last_log.frame + 1))
-                        # Continue to the next frame if the logs indicate we have analyzed frames later than this
-                        # one
-                        time.sleep(0.01)  # Sleep here so we don't overtake the buffer
-                        continue
-
-                """
-                Because previous frames are passed to manual selection,
-                the pollinator selection may not have occurred on the
-                current frame. Therefore, the frame number used for
-                file names and logging will need to be calculated.
-                """
-                previous_frames = handle_previous_frames(frame, previous_frames)
-                pollinator, box, labeled_frame = manual_selection(f_num, previous_frames, site, plant, video)
-                if pollinator is None and box is None and labeled_frame is None:
-                    continue
-
-                fnum_calc = calculate_frame_number(labeled_frame, previous_frames, f_num)
-                frame_fname = get_filename(fnum_calc, count, video, frame=True)
-                if pollinator is not False and pollinator is not None:
-                    # Save the whole frame as a pollinator
-                    print("[*] Saving frame as an example of Pollinator.")
-                    cv2.imwrite(os.path.join(arguments["write_path"], "Frames", "Pollinator", frame_fname),
-                                labeled_frame)
-
-                    # And save the pollinator
-                    pol_fname = get_filename(fnum_calc, count, video)
-                    count = handle_pollinator(arguments, pol_fname, vdir, count, fnum_calc, pollinator, box, video,
-                                              labeled_frame)
-
-                elif pollinator is False and box is None:
-                    # Save the whole frame as an example of no pollinator
-                    print("[*] Saving frame as an example of Not_Pollinator.")
-                    img_path = os.path.join(arguments["write_path"], "Frames", "Not_Pollinator", frame_fname)
-                    cv2.imwrite(img_path, labeled_frame)
-                    w, h, _ = frame.shape
-                    size = w * h
-                    print("[*] Logging this frame as Not_Pollinator.")
-                    add_log_entry(directory=vdir.directory,
-                                  video=video,
-                                  time=None,
-                                  classification="Not_Pollinator",
-                                  pollinator_id=None,
-                                  proba=None,
-                                  genus=None,
-                                  species=None,
-                                  behavior=None,
-                                  size=size,
-                                  bbox="Whole",  # Entire frame
-                                  size_class=None,
-                                  frame_number=fnum_calc,
-                                  manual=True,
-                                  img_path=img_path,
-                                  )
-
-            vs.stop()
-
-    cv2.destroyAllWindows()
+            if video in processed_videos:
+                print("[*] Video has been fully processed. Skipping...")
+                continue
+            else:
+                process_video(arguments, vdir, video, site, plant)
 
 
 def handle_pollinator(arguments, file_name, vdir, count, f_num, pollinator, box, video, frame):
@@ -272,7 +287,7 @@ def handle_pollinator(arguments, file_name, vdir, count, f_num, pollinator, box,
     pol_id = prompt("Visitor ID >> ", bottom_toolbar=bottom_toolbar, completer=get_completer("pollinator"),
                     key_bindings=bindings)
     if visitor:
-        handle_visitor(pol_id, vdir, video)
+        handle_visitor(pol_id, vdir, video, f_num)
         # Discrete visitors are highlighted in purple
         frame_annotation_color = (240, 32, 160)
 
@@ -308,7 +323,7 @@ def handle_pollinator(arguments, file_name, vdir, count, f_num, pollinator, box,
     return count
 
 
-def handle_visitor(pol_id, vdir, video):
+def handle_visitor(pol_id, vdir, video, frame_number):
     global visitor
 
     def bottom_toolbar():
@@ -339,6 +354,7 @@ def handle_visitor(pol_id, vdir, video):
                                        pol_id=pol_id,
                                        behavior=behavior,
                                        size=size,
+                                       recent_frame=frame_number,
                                        ppt_slide=ppt_slide,
                                        notes=notes)
         visitor = False
