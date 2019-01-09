@@ -69,20 +69,22 @@ class DiscreteVisitor(Model):
     size = CharField()
     ppt_slide = IntegerField(null=True)
     notes = TextField(null=True)
+    recent_frame = IntegerField(default=0)  # Most recently added frame
 
     class Meta:
         database = db
 
 
 @db.connection_context()
-def add_or_update_discrete_visitor(directory, video_fname, pol_id, behavior, size, ppt_slide=None, notes=None):
+def add_or_update_discrete_visitor(directory, video_fname, pol_id, behavior, size, recent_frame, ppt_slide=None,
+                                   notes=None):
     video = get_video(directory, video_fname)
     visitor, created = DiscreteVisitor.get_or_create(
         video=video,
         pol_id=pol_id,
         behavior=behavior,
         size=size,
-        defaults={"num_visits": 1, "ppt_slide": ppt_slide, "notes": notes}
+        defaults={"num_visits": 1, "recent_frame": recent_frame, "ppt_slide": ppt_slide, "notes": notes}
     )
     if created:
         print("[*] Adding new database entry for {} to video {}".format(pol_id, video_fname))
@@ -91,6 +93,9 @@ def add_or_update_discrete_visitor(directory, video_fname, pol_id, behavior, siz
         visitor.num_visits += 1
         print("[*] Incremented discrete visit tally for {}. Number of visits now up to {}.".format(pol_id,
                                                                                                    visitor.num_visits))
+        # Makes it easier to determine where user left off scoring a particular video
+        visitor.recent_frame = recent_frame
+
         if ppt_slide is not None:
             if visitor.ppt_slide is None:
                 visitor.ppt_slide = ppt_slide
@@ -136,9 +141,10 @@ def add_log_entry(directory, video, time, classification, size, bbox, frame_numb
 
 
 @db.connection_context()
-def add_processed_video(video, total_frames):
+def add_processed_video(video):
+    print("[*] Saving processing completion of {} to database...".format(video))
     entry = Video.get(Video.video == video)
-    entry.total_frames = total_frames
+    entry.pollinators_processed = True
     entry.save()
 
 
@@ -186,7 +192,7 @@ def get_analyzed_videos():
 
 
 @db.connection_context()
-def get_processed_videos():
+def get_processed_videos(pollinator=False):
     """
     Returns a list of videos that have had their frame times
     fully processed.
@@ -194,7 +200,11 @@ def get_processed_videos():
     processed.
     """
     try:
-        videos = Video.select().where(Video.frame_times_processed is True)
+        if pollinator:
+            videos = Video.select().where(Video.pollinators_processed is True)
+        else:
+            videos = Video.select().where(Video.frame_times_processed is True)
+
         videos = set([vid.video for vid in videos])
         return videos
 
