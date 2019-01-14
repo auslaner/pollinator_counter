@@ -201,9 +201,9 @@ def get_processed_videos(pollinator=False):
     """
     try:
         if pollinator:
-            videos = Video.select().where(Video.pollinators_processed is True)
+            videos = Video.select().where(Video.pollinators_processed == 1)
         else:
-            videos = Video.select().where(Video.frame_times_processed is True)
+            videos = Video.select().where(Video.frame_times_processed == 1)
 
         videos = set([vid.video for vid in videos])
         return videos
