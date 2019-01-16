@@ -188,7 +188,7 @@ def process_video(arguments, vdir, video, site, plant):
                 # Continue to the next frame if the logs indicate we have analyzed frames later than this
                 # one
                 time.sleep(0.01)  # Sleep here so we don't overtake the buffer
-                continue
+                #continue
 
         """
         Because previous frames are passed to manual selection,
@@ -345,7 +345,7 @@ def handle_visitor(pol_id, vdir, video, frame_number):
         else:
             # Change empty string to None so peewee doesn't complain
             ppt_slide = None
-        notes = s.prompt(msg_heading + "Notes >> ")
+        notes = prompt(msg_heading + "Notes >> ", bottom_toolbar=bottom_toolbar)
         if notes == "":
             # Change empty string to None so peewee doesn't complain
             notes = None
