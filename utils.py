@@ -37,7 +37,8 @@ POLLINATOR_OPTIONS = ["Anthophora",
                       "Ceratina",
                       "Fly",
                       "Halictus",
-                      "Hyles lineata",
+                      "Hyles lineata",  # Hummingbird mimic moth
+                      "Hystricia",  # Type of fly
                       "Masarinae",
                       "Mosquito",
                       "Osmia",
