@@ -1,27 +1,173 @@
 import logging
+import os
 import random
+import sys
 from collections import namedtuple
 
-import os
-
 import cv2
-import sys
 
-from peewee import SqliteDatabase
+from prompt_toolkit import prompt, PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style
+from prompt_toolkit.validation import Validator, ValidationError
 
-system_paths = {}
+from class_handler import create_classification_folders, CLASSES
+from platform_utils import get_system_paths
+from rana_logger import add_or_update_discrete_visitor, add_log_entry
 
+BEHAVIOR_OPTIONS = ["Enters Flower",
+                    "Flyby",
+                    "Foraging",
+                    "Investigating",
+                    "Lands; Does Not Forage",
+                    "Nectar Foraging",
+                    "Non-pollinator",
+                    "Pollen Foraging",
+                    "Resting",
+                    "Unknown"]
+
+POLLINATOR_OPTIONS = ["Anthophora",
+                      "Bee tiny",
+                      "Bombylius",
+                      "Bombus",
+                      "Butterfly",
+                      "Ceratina",
+                      "Fly",
+                      "Halictus",
+                      "Hyles lineata",
+                      "Masarinae",
+                      "Mosquito",
+                      "Osmia",
+                      "Osmia1",
+                      "Osmia green",
+                      "Unknown",
+                      "Unknown bee",
+                      "Unknown wasp",
+                      "Wasp black",
+                      "Xylocopa"]
+
+SIZE_OPTIONS = ["l",
+                "m",
+                "s",
+                "xs"]
+
+PROMPT_STYLE = Style.from_dict({
+    # User input (default text).
+    '':          '#ff0066',
+
+    # Prompt.
+    'info': '#28FE14',
+    'dolla': '#ffff00',
+    'bottom-toolbar': '#ffffff bg:#333333',
+})
+
+bindings = KeyBindings()
+pol_id = None  # Pollinator identification indicated by user
+ref_pnt = []
 Video = namedtuple('Video', ['directory', 'files'])
+visitor = False
+#logging.basicConfig(level=logging.DEBUG)
 
 
-def get_db_connection():
-    populate_system_paths()
-    db_loc = os.path.join(system_paths['home'], 'Pollinator_Counter')
-    if not os.path.exists(db_loc):
-        os.makedirs(db_loc)
+class NumberValidator(Validator):
+    def validate(self, document):
+        text = document.text
 
-    db = SqliteDatabase(os.path.join(db_loc, 'log.db'))
-    return db
+        if text and not text.isdigit():
+            i = 0
+
+            # Get index of fist non numeric character.
+            # We want to move the cursor here.
+            for i, c in enumerate(text):
+                if not c.isdigit():
+                    break
+
+            raise ValidationError(message='Please supply only integer values',
+                                  cursor_position=i)
+
+
+@bindings.add("c-d")
+def _(event):
+    """
+    Mark frame as containing a discrete visitor.
+    """
+    global visitor
+    visitor = True
+
+
+@bindings.add("c-p")
+def _(event):
+    """
+    Call function to set the pollinator identification to change the
+    current ID or indicate a discrete visitor.
+    """
+    prompt_pol_id()
+
+
+def determine_site_preference(video_list):
+    """
+    Determines list of sites from list of videos and prompts user if
+    they would prefer to work with a single particular site from the
+    list of sites.
+    :param video_list: List of Video tuples.
+    :return: Returns the string name of the site the user would like
+    to focus on.
+    """
+    sites = get_sites(video_list)
+    message = [("class:info", "\n  Is there a particular site you would like to focus on?\n\n" +
+                "  Leave blank to process all sites.\n"),
+               ("class:dolla", "$ ")]
+    site_pref = prompt(message, style=PROMPT_STYLE, completer=WordCompleter(sites))
+    return site_pref
+
+
+def get_path_input():
+    system_paths = get_system_paths()
+    session = PromptSession(history=FileHistory(".classifier_history"),
+                            style=PROMPT_STYLE,
+                            auto_suggest=AutoSuggestFromHistory(),
+                            complete_while_typing=True)
+    video_text = [
+        ("class:info",
+         """
+ Please type the full file path to your video files.
+
+ [Example]
+ {}Videos
+
+ [Pro Tip]
+ Use the UP and DOWN arrow keys to search previously used values.
+         """.format(system_paths['home'] + os.path.sep)),
+        ("class:dolla", "\n$ ")]
+
+    image_text = [
+        ("class:info",
+         """
+ Please type the full file path where pollinator images will be saved.
+
+ [Example]
+ {}Pictures
+
+ [Pro Tip]
+ Use the UP and DOWN arrow keys to search previously used values.
+         """.format(system_paths['home'] + os.path.sep)),
+        ("class:dolla", "\n$ ")]
+
+    video_path = session.prompt(video_text)
+    image_path = session.prompt(image_text)
+    return {"video_path": video_path, "write_path": image_path}
+
+
+def get_completer(completer_type):
+    completers = {
+        "behavior": WordCompleter(BEHAVIOR_OPTIONS),
+        "pollinator": WordCompleter(POLLINATOR_OPTIONS),
+        "size": WordCompleter(SIZE_OPTIONS)
+    }
+    return completers[completer_type]
 
 
 def get_filename(frame_number, count, video, frame=False):
@@ -39,7 +185,7 @@ def get_formatted_box(x, y, w, h):
 
 def get_pollinator_area(frame, pollinator_box):
     pollinator_area = frame[int(pollinator_box[1]):int(pollinator_box[1] + pollinator_box[3]),
-                            int(pollinator_box[0]):int(pollinator_box[0] + pollinator_box[2])]
+                      int(pollinator_box[0]):int(pollinator_box[0] + pollinator_box[2])]
     return pollinator_area
 
 
@@ -71,6 +217,90 @@ def get_video_list(video_path):
     return videos
 
 
+def handle_pollinator(arguments, file_name, vdir, count, f_num, pollinator, box, video, frame):
+    global pol_id
+
+    # Default pollinator selection is highlighted in red for previous frames
+    frame_annotation_color = (0, 0, 255)
+    w, h, _ = pollinator.shape
+    area = w * h
+
+    if visitor:
+        handle_visitor(pol_id, vdir, video, f_num)
+        # Discrete visitors are highlighted in purple
+        frame_annotation_color = (240, 32, 160)
+
+    img_path = os.path.join(arguments["write_path"], "Pollinator", pol_id, file_name)
+    print("[*] Saving pollinator image to", img_path)
+    cv2.imwrite(img_path, pollinator)
+
+    print("[*] Adding log entry to database...")
+    add_log_entry(directory=vdir.directory,
+                  video=video,
+                  time=None,  # This will be populated later since timestamps are being preprocessed
+                  name=file_name,
+                  classification="Pollinator",
+                  pollinator_id=pol_id,
+                  proba=None,
+                  genus=None,
+                  species=None,
+                  behavior=None,
+                  size=area,
+                  bbox=box,
+                  size_class=None,
+                  frame_number=f_num,
+                  manual=True,
+                  img_path=img_path,
+                  )
+
+    # Annotate frame
+    logging.debug("Box: {}".format(box))
+    x, y, w, h = [int(num) for num in box.split(" ")]
+    cv2.rectangle(frame, (x, y), (x + w, y + h), frame_annotation_color, 1)
+
+    count += 1
+    return count
+
+
+def handle_visitor(pol_id, vdir, video, frame_number):
+    global visitor
+
+    def bottom_toolbar():
+        return [("class:bottom-toolbar", "Press CTRL + c to cancel.")]
+
+    s = PromptSession(bottom_toolbar=bottom_toolbar)
+
+    msg_heading = """
+[Discrete Visitor Info]
+
+"""
+    try:
+        behavior = s.prompt(msg_heading + "Behavior >> ", completer=get_completer("behavior"))
+        size = s.prompt(msg_heading + "Size >> ", completer=get_completer("size"))
+        ppt_slide = s.prompt(msg_heading + "Powerpoint Slide >> ", validator=NumberValidator())
+        if ppt_slide:
+            ppt_slide = int(ppt_slide)
+        else:
+            # Change empty string to None so peewee doesn't complain
+            ppt_slide = None
+        notes = prompt(msg_heading + "Notes >> ", bottom_toolbar=bottom_toolbar)
+        if notes == "":
+            # Change empty string to None so peewee doesn't complain
+            notes = None
+        print("[*] Adding visitor info to database...")
+        add_or_update_discrete_visitor(directory=vdir.directory,
+                                       video_fname=video,
+                                       pol_id=pol_id,
+                                       behavior=behavior,
+                                       size=size,
+                                       recent_frame=frame_number,
+                                       ppt_slide=ppt_slide,
+                                       notes=notes)
+        visitor = False
+    except KeyboardInterrupt:
+        print("\n[!] Canceled!\n")
+
+
 def manual_selection(frame_number, previous_frames, site=None, plant=None, video=None):
     """
     Allows for manual selection of a pollinator in a given frame. The
@@ -99,10 +329,14 @@ def manual_selection(frame_number, previous_frames, site=None, plant=None, video
     the frame has been marked as not containing a pollinator,
     pollinator is returned as False and bounding box info as None.
     """
+    global ref_pnt
+
     if site and video:
         wname = " | ".join([site, plant, video])
     else:
         wname = "Pollinator Check"
+    cv2.namedWindow(wname)
+    cv2.setMouseCallback(wname, record_click)
     cursor = 0
     prev_len = len(previous_frames)
     while True:
@@ -118,7 +352,9 @@ def manual_selection(frame_number, previous_frames, site=None, plant=None, video
 [*] Frame number {}. 
 
     [Pollinator Selection]
-    If a pollinator is present, press `p` to select its location. 
+    Current pollinator ID is set to {}.
+    To change the current pollinator ID, press `p`.
+    If the pollinator ID is correct and a pollinator is present, click on it to record it to the database. 
     If the frame DOES NOT have a pollinator, press `n`.
 
     [Navigation]
@@ -129,7 +365,7 @@ def manual_selection(frame_number, previous_frames, site=None, plant=None, video
 
     Press `q` to exit program.
     """
-              .format(cur_frame, min(cur_frame - 1, 199)))  # 200 is max size of previous frames list
+              .format(cur_frame, pol_id, min(prev_len - cursor - 1, 199)))  # 200 is max size of previous frames list
 
         logging.debug("Current Frame: {}".format(cur_frame))
         logging.debug("Frame number: {}".format(frame_number))
@@ -139,17 +375,25 @@ def manual_selection(frame_number, previous_frames, site=None, plant=None, video
 
         logging.debug("Key: {}".format(str(key)))
 
-        if key == ord("p"):
-            pollinator_box = select_pollinator(frame)
-            if pollinator_box == (0, 0, 0, 0):
-                # User canceled selection
-                print("[!] Selection canceled!")
-                continue
-            x, y, w, h = pollinator_box
+        if len(ref_pnt):
+            x = ref_pnt[0][0] - 50
+            y = ref_pnt[0][1] - 50
+            w = 100
+            h = 100
+            pollinator_box = (x, y, w, h)
             box = get_formatted_box(x, y, w, h)
             pollinator = get_pollinator_area(frame, pollinator_box)
 
+            # Reset ref_pnt
+            ref_pnt = []
+
+            if pol_id is None:
+                prompt_pol_id()
+
             return pollinator, box, frame
+
+        if key == ord("p"):
+            prompt_pol_id()
 
         elif key == ord("n"):
             pollinator = False
@@ -182,19 +426,34 @@ def manual_selection(frame_number, previous_frames, site=None, plant=None, video
     return None, None, None
 
 
-def populate_system_paths():
-    global system_paths
-    if sys.platform == "darwin":
-        # OS X
-        system_paths['home'] = os.environ["HOME"]
-    elif sys.platform == "win32":
-        # Windows
-        system_paths['home'] = os.environ["HOMEDRIVE"] + os.environ["HOMEPATH"]
+def pollinator_setup(arguments):
+    create_classification_folders(CLASSES, arguments["write_path"])
+
+    species_path = os.path.join(arguments["write_path"], "Pollinator")
+    for species in POLLINATOR_OPTIONS:
+        species_join_path = os.path.join(species_path, species)
+        print("[*] Checking {} for folder of {}.".format(species_path, species))
+        if not os.path.exists(species_join_path):
+            os.mkdir(species_join_path)
+            print("Folder for {} wasn't found. Added as {}.".format(species, species_join_path))
 
 
-def select_pollinator(frame):
-    cv2.destroyAllWindows()
-    print("[!] Please select the area around the pollinator.")
-    pollinator = cv2.selectROI("Pollinator Area Selection", frame, fromCenter=False, showCrosshair=True)
+def prompt_pol_id():
+    global pol_id
 
-    return pollinator
+    def bottom_toolbar():
+        if not visitor:
+            return [("class:bottom-toolbar", "Press CTRL + d to mark pollinator as a discrete visitor.")]
+        else:
+            return [("class:bottom-toolbar", "Discrete visitor marked!")]
+
+    print("The current pollinator ID is set to {}".format(pol_id))
+    pol_id = prompt("Visitor ID >> ", bottom_toolbar=bottom_toolbar, completer=get_completer("pollinator"),
+                    key_bindings=bindings)
+
+
+def record_click(event, x, y, flags, param):
+    global ref_pnt
+
+    if event == cv2.EVENT_LBUTTONDBLCLK:
+        ref_pnt = [(x, y)]
