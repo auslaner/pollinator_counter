@@ -1,7 +1,18 @@
 import os
 from peewee import *
 
-from utils import get_db_connection
+from platform_utils import get_system_paths
+
+
+def get_db_connection():
+    system_paths = get_system_paths()
+    db_loc = os.path.join(system_paths['home'], 'Pollinator_Counter')
+    if not os.path.exists(db_loc):
+        os.makedirs(db_loc)
+
+    db = SqliteDatabase(os.path.join(db_loc, 'log.db'))
+    return db
+
 
 db = get_db_connection()
 
@@ -149,6 +160,22 @@ def add_processed_video(video):
 
 
 @db.connection_context()
+def get_analyzed_videos():
+    """
+    Returns a list of all videos that are referenced in the Frame table.
+    Note that this list could contain videos that were only partially
+    processed.
+    :return: list of videos in Frame table.
+    """
+    try:
+        videos = Frame.select()
+        videos = set([vid.video for vid in videos])
+        return videos
+    except DoesNotExist:
+        print("[*] No analyzed videos found.")
+
+
+@db.connection_context()
 def get_last_entry(manual, video):
     """
     Returns the last entry in the database that was from the
@@ -173,22 +200,6 @@ def get_last_processed_frame(video):
     f_nums = [vf.frame for vf in video_frames]
     last_frame = max(f_nums)
     return last_frame
-
-
-@db.connection_context()
-def get_analyzed_videos():
-    """
-    Returns a list of all videos that are referenced in the Frame table.
-    Note that this list could contain videos that were only partially
-    processed.
-    :return: list of videos in Frame table.
-    """
-    try:
-        videos = Frame.select()
-        videos = set([vid.video for vid in videos])
-        return videos
-    except DoesNotExist:
-        print("[*] No analyzed videos found.")
 
 
 @db.connection_context()
