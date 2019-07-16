@@ -5,7 +5,7 @@ import time
 import numpy as np
 from imutils.video import FileVideoStream
 
-from rana_logger import add_log_entry, get_last_entry, setup, populate_video_table, \
+from rana_logger import add_log_entry, get_last_frame, setup, populate_video_table, \
     get_processed_videos, add_processed_video
 from utils import get_video_list, manual_selection, get_filename, get_path_input, \
     pollinator_setup, handle_pollinator, determine_site_preference
@@ -50,7 +50,7 @@ def calculate_frame_number(labeled_frame, previous_frames, f_num):
 
 def process_video(arguments, vdir, video, site, plant):
     print("[*] Analyzing video {} from site {}, plant number {}.".format(video, site, plant))
-    last_log = get_last_entry(True, video)
+    last_log = get_last_frame(video)
 
     vs = FileVideoStream(os.path.join(vdir.directory, video)).start()
 
@@ -78,7 +78,7 @@ def process_video(arguments, vdir, video, site, plant):
                 # Continue to the next frame if the logs indicate we have analyzed frames later than this
                 # one
                 time.sleep(0.01)  # Sleep here so we don't overtake the buffer
-                #continue
+                continue
 
         """
         Because previous frames are passed to manual selection,
