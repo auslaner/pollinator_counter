@@ -1,4 +1,6 @@
 import os
+from datetime import date
+
 from peewee import *
 
 from platform_utils import get_system_paths
@@ -74,6 +76,7 @@ class DiscreteVisitor(Model):
     """
     id = PrimaryKeyField()
     video = ForeignKeyField(Video, backref="discrete_visitors")
+    date = DateField()
     pol_id = CharField()
     num_visits = IntegerField()
     behavior = CharField()
@@ -87,6 +90,13 @@ class DiscreteVisitor(Model):
 
 
 @db.connection_context()
+def get_date_from_frame(video, frame_number):
+    frame = Frame.get(Frame.video == video, Frame.frame == frame_number)
+    ts = frame.timestamp
+    return date(year=ts.year, month=ts.month, day=ts.day)
+
+
+@db.connection_context()
 def add_or_update_discrete_visitor(directory, video_fname, pol_id, behavior, size, recent_frame, ppt_slide=None,
                                    notes=None):
     video = get_video(directory, video_fname)
@@ -95,7 +105,10 @@ def add_or_update_discrete_visitor(directory, video_fname, pol_id, behavior, siz
         pol_id=pol_id,
         behavior=behavior,
         size=size,
-        defaults={"num_visits": 1, "recent_frame": recent_frame, "ppt_slide": ppt_slide, "notes": notes}
+        date=get_date_from_frame(video_fname, recent_frame),
+        ppt_slide=ppt_slide,
+        notes=notes,
+        defaults={"num_visits": 1, "recent_frame": recent_frame}
     )
     if created:
         print("[*] Adding new database entry for {} to video {}".format(pol_id, video_fname))
@@ -112,9 +125,6 @@ def add_or_update_discrete_visitor(directory, video_fname, pol_id, behavior, siz
                 visitor.ppt_slide = ppt_slide
             else:
                 print("[!] Only a single powerpoint slide can be saved for each group of pollinator class.")
-
-        if notes is not None:
-            visitor.notes += notes + "\n"
 
     visitor.save()
 
@@ -176,30 +186,15 @@ def get_analyzed_videos():
 
 
 @db.connection_context()
-def get_last_entry(manual, video):
-    """
-    Returns the last entry in the database that was from the
-    same video and inserted using the same method.
-    :param manual: A boolean indicating if manual selection is being used.
-    :param video: The name of the video file
-    :return: Return the latest entry in the database that shares the same
-    boolean value as the manual parameter.
-    """
+def get_last_frame(video):
     try:
-        last = LogEntry.select().where(LogEntry.video == video, LogEntry.manual == manual) \
-            .order_by(LogEntry.id.desc()).get()
+        video_id = Video.select(Video.id).where(Video.video == video).get()
+        last = DiscreteVisitor.select().where(DiscreteVisitor.video == video_id) \
+            .order_by(DiscreteVisitor.recent_frame.desc()).get()
 
         return last
     except DoesNotExist:
-        print("[*] No existing log entry for {} while manual selection is set to {}.".format(video, manual))
-
-
-@db.connection_context()
-def get_last_processed_frame(video):
-    video_frames = Frame.select().where(Frame.video == video)
-    f_nums = [vf.frame for vf in video_frames]
-    last_frame = max(f_nums)
-    return last_frame
+        print("[*] No existing log entry for {}.".format(video))
 
 
 @db.connection_context()
