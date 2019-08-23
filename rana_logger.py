@@ -76,7 +76,7 @@ class DiscreteVisitor(Model):
     """
     id = PrimaryKeyField()
     video = ForeignKeyField(Video, backref="discrete_visitors")
-    date = DateField()
+    date = DateField(null=True)
     pol_id = CharField()
     num_visits = IntegerField()
     behavior = CharField()
@@ -91,21 +91,35 @@ class DiscreteVisitor(Model):
 
 @db.connection_context()
 def get_date_from_frame(video, frame_number):
-    frame = Frame.get(Frame.video == video, Frame.frame == frame_number)
-    ts = frame.timestamp
-    return date(year=ts.year, month=ts.month, day=ts.day)
+    try:
+        frame = Frame.get(Frame.video == video, Frame.frame == frame_number)
+        ts = frame.timestamp
+        return date(year=ts.year, month=ts.month, day=ts.day)
+    except Frame.DoesNotExist:
+        print("[!] Frame with time does not exist in the database. Attempting to retrieve time from current frame...")
+        return None
+
+
+@db.connection_context()
+def get_last_processed_frame(video):
+    video_frames = Frame.select().where(Frame.video == video)
+    f_nums = [vf.frame for vf in video_frames]
+    last_frame = max(f_nums)
+    return last_frame
 
 
 @db.connection_context()
 def add_or_update_discrete_visitor(directory, video_fname, pol_id, behavior, size, recent_frame, ppt_slide=None,
                                    notes=None):
     video = get_video(directory, video_fname)
+    dt = get_date_from_frame(video_fname, recent_frame)
+
     visitor, created = DiscreteVisitor.get_or_create(
         video=video,
         pol_id=pol_id,
         behavior=behavior,
         size=size,
-        date=get_date_from_frame(video_fname, recent_frame),
+        date=dt,
         ppt_slide=ppt_slide,
         notes=notes,
         defaults={"num_visits": 1, "recent_frame": recent_frame}
@@ -162,10 +176,17 @@ def add_log_entry(directory, video, time, classification, size, bbox, frame_numb
 
 
 @db.connection_context()
-def add_processed_video(video):
+def add_processed_video(video, total_frames=None, pollinator=False):
     print("[*] Saving processing completion of {} to database...".format(video))
     entry = Video.get(Video.video == video)
-    entry.pollinators_processed = True
+
+    if pollinator:
+        entry.pollinators_processed = True
+
+    if total_frames:
+        entry.frame_times_processed = True
+        entry.total_frames = total_frames
+
     entry.save()
 
 
@@ -178,8 +199,9 @@ def get_analyzed_videos():
     :return: list of videos in Frame table.
     """
     try:
-        videos = Frame.select()
-        videos = set([vid.video for vid in videos])
+        print("[*] Getting list of videos referenced inside the Frame database table...")
+        frames = Frame.select()
+        videos = set([f.video for f in frames])
         return videos
     except DoesNotExist:
         print("[*] No analyzed videos found.")
@@ -206,6 +228,7 @@ def get_processed_videos(pollinator=False):
     processed.
     """
     try:
+        print("[*] Retrieving list of videos whose frame times have been fully processed...")
         if pollinator:
             videos = Video.select().where(Video.pollinators_processed == 1)
         else:

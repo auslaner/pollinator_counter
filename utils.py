@@ -1,11 +1,15 @@
+import imutils
 import logging
 import os
 import random
 import sys
 from collections import namedtuple
+from datetime import datetime
 
 import cv2
+import numpy as np
 
+from imutils.contours import sort_contours
 from prompt_toolkit import prompt, PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
@@ -108,6 +112,74 @@ def _(event):
     prompt_pol_id()
 
 
+def classify_digits(img, reference_digits):
+    img = imutils.resize(img, height=150)
+    img_thresh = get_thresh(img)
+    img_cnts, bboxes = get_contours(img_thresh, upper_thresh=11000)
+
+    cv2.drawContours(img, img_cnts, -1, (0, 255, 0), 2)
+
+    output = []
+    for c, box in zip(img_cnts, bboxes):
+        (x, y, w, h) = box
+        roi = img[y:y + h, x:x + w]
+        roi = cv2.resize(roi, (57, 88))
+
+        # Initialize a list of template matching scores
+        scores = []
+
+        # Loop over the reference digit name and digit ROI
+        for (digit, digitROI) in reference_digits.items():
+            # Apply correlation-based template matching, take the
+            # score, and update the scores list
+            result = cv2.matchTemplate(roi, digitROI,
+                                       cv2.TM_CCOEFF)
+            (_, score, _, _) = cv2.minMaxLoc(result)
+            scores.append(score)
+
+        # The classification for the digit ROI will be the reference
+        # digit name with the largest template matching score
+        max_score = str(np.argmax(scores))
+        output.append((max_score, roi))
+
+    return output
+
+
+def compute_frame_time(frame, reference_digits, time_parsable, ts_box):
+    # time_parsable is False until we can successfully parse the datetime in the frame
+    if time_parsable is False:
+        # We make the frame larger and cut it in half to make it easier for the user to select the
+        # timestamp area
+        larger = imutils.resize(frame[int(frame.shape[1] / 2):], width=1500)
+        # The ts_box is a tuple representing the points around the timestamp area that the user
+        # indicated
+        ts_box = get_timestamp_box(larger)
+        # We then attempt to parse the timestamp area in the frame based on the reference digits
+        frame_time = get_frame_time(larger, reference_digits, ts_box)
+
+    else:
+        # We need to keep resizing the frame so that the timestamp crop will match the ts_box that the
+        #  user supplied in the beginning of the video
+        larger = imutils.resize(frame[int(frame.shape[1] / 2):], width=1500)
+        frame_time = get_frame_time(larger, reference_digits, ts_box)
+    return frame_time, ts_box
+
+
+def define_reference_digits(ref, ref_cnts, bounding_boxes):
+    digits = {}
+    # Loop over the OCR reference contours
+    for (i, c) in enumerate(ref_cnts):
+        # get the bounding box for the digit and resize it to a fixed size
+        (x, y, w, h) = bounding_boxes[i]
+        roi = ref[y:y + h, x:x + w]
+        roi = cv2.resize(roi, (57, 88))
+
+        # update the digits dictionary, mapping the digit name to the ROI
+        digits[i] = roi
+
+    return digits
+
+
 def determine_site_preference(video_list):
     """
     Determines list of sites from list of videos and prompts user if
@@ -123,6 +195,12 @@ def determine_site_preference(video_list):
                ("class:dolla", "$ ")]
     site_pref = prompt(message, style=PROMPT_STYLE, completer=WordCompleter(sites))
     return site_pref
+
+
+def get_frame_time(frame, reference_digits, timestamp_box):
+    timestamp_area = get_timestamp_area(frame, timestamp_box)
+    frame_time = process_timestamp_area(reference_digits, timestamp_area)
+    return frame_time
 
 
 def get_path_input():
@@ -171,6 +249,22 @@ def get_completer(completer_type):
     return completers[completer_type]
 
 
+def get_contours(thresh, lower_thresh=2000, upper_thresh=5000):
+    (_, cnts, _) = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_SIMPLE)
+    sorted_cnts, bounding_boxes = sort_contours(cnts)
+    final_contours = []
+    bboxes = []
+    # Filter contours
+    for cnt, bbox in zip(sorted_cnts, bounding_boxes):
+        area = cv2.contourArea(cnt)
+        if upper_thresh > area > lower_thresh:
+            final_contours.append(cnt)
+            bboxes.append(bbox)
+
+    return final_contours, bboxes
+
+
 def get_filename(frame_number, count, video, frame=False):
     if frame:
         file_name = "-".join([video[:-4], "frame", str(frame_number), str(count)]) + ".png"
@@ -199,6 +293,32 @@ def get_sites(video_list):
     """
     # Extract site info from directory path
     return set([vdir.directory.split(os.path.sep)[-2:][0] for vdir in video_list])
+
+
+def get_thresh(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    final = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+    return final
+
+
+def get_timestamp_area(frame, ts_box):
+    """
+    Get the cropped area surrounding the timestamp of an image.
+    :param frame: A Numpy array representing the original image.
+    :param ts_box: A tuple returned from OpenCV's selectROI function defining the coordinates around the timestamp of
+    the image.
+    :return: A Numpy array representing the cropped area of the image containing the timestamp information.
+    """
+    timestamp_area = frame[int(ts_box[1]):int(ts_box[1] + ts_box[3]), int(ts_box[0]):int(ts_box[0] + ts_box[2])]
+    return timestamp_area
+
+
+def get_timestamp_box(frame):
+    print("[!] Please select the area around the video timestamp.")
+    ts_box = cv2.selectROI("Timestamp Area Selection", frame, fromCenter=False,
+                           showCrosshair=True)
+    cv2.destroyAllWindows()
+    return ts_box
 
 
 def get_video_list(video_path):
@@ -437,6 +557,41 @@ def pollinator_setup(arguments):
         if not os.path.exists(species_join_path):
             os.mkdir(species_join_path)
             print("Folder for {} wasn't found. Added as {}.".format(species, species_join_path))
+
+
+def process_reference_digits():
+    ref = cv2.imread(os.path.join(os.path.dirname(__file__), "ref_digits.png"))
+    # Take a threshold of the image before finding contours
+    thresh = get_thresh(ref)
+    # Get contours of the reference image. Each should represent a digit
+    # for matching against each frame in the video stream
+    reference_contours, ref_boxes = get_contours(thresh, upper_thresh=9000)
+    # Get the reference digits
+    ref_digits = define_reference_digits(ref, reference_contours, ref_boxes)
+
+    return ref_digits
+
+
+def process_timestamp_area(reference_digits, timestamp_area):
+    (h, w) = timestamp_area.shape[:2]
+
+    first_line = timestamp_area[:int(h / 2), :w]
+    fl_classification = classify_digits(first_line, reference_digits)
+    fl_labels = [digit[0] for digit in fl_classification]
+
+    second_line = timestamp_area[int(h / 2):, :w]
+    sl_classification = classify_digits(second_line, reference_digits)
+    sl_labels = [digit[0] for digit in sl_classification]
+
+    labels = ''.join(fl_labels + sl_labels)
+    try:
+        timestamp = datetime.strptime(labels[:-2], "%Y%m%d%H%M%S")
+        print("[*] Processed time:", timestamp.strftime("%Y-%m-%d %H:%M:%S"))
+        return timestamp
+    except ValueError:
+        print("[!] Could not process time. Please try again.")
+        timestamp = None
+        return timestamp
 
 
 def prompt_pol_id():

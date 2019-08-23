@@ -129,7 +129,8 @@ def process_video(arguments, vdir, video, site, plant):
                           img_path=img_path,
                           )
 
-    add_processed_video(video)
+    # Video is done being processed
+    add_processed_video(video, pollinator=True)
     vs.stop()
 
 
